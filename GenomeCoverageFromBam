@@ -1,0 +1,120 @@
+#!/bin/bash
+
+#Get script path and directory
+SCRIPT=$(readlink -e $0)
+SCRIPTDIR=$(dirname $SCRIPT)
+UTILS=$SCRIPTDIR/../Utils/
+
+#Source other files
+source $UTILS/Logging
+source $UTILS/Error
+
+usage()
+{
+    cat <<EOF
+
+    Generates coverage .bed file from sorted BAM file
+    usage: $0 options
+
+    OPTIONS:
+     REQUIRED:
+       -i <FILE>   Sorted BAM file 
+       -g <FILE>   Genome fasta.fai
+       -o <FILE>   Output
+     OPTIONAL:
+       -h          Show this message
+       -e <FILE>   Log file [/dev/null]
+EOF
+}
+
+#Create a timestamp
+START=$(timestamp)
+
+#Variables
+IN=
+OUT=
+THREADS=1
+GENOMEFAI=
+LOGFILE=/dev/null
+
+#Get command line options
+while getopts “hi:g:o:e:” OPTION
+do
+    case $OPTION in
+
+        #help
+        h)      
+            usage
+            exit 1
+            ;;
+        #input
+        i)
+            IN=$OPTARG
+            ;;	
+	#output
+	o)
+	    OUT=$OPTARG
+	    ;;
+	#genome fai
+	g)
+	    GENOMEFAI=$OPTARG
+	    ;;
+	#log file
+	e)
+	    LOGFILE=$OPTARG
+	    ;;
+    esac
+done
+
+#Verify arguments
+if [ -z  $IN ]; then 
+    echo "Error: Must provide input file with -i"
+    usage; exit
+fi
+
+if [ -z $OUT ]; then
+    echo "Error: Must specify output file with -o"
+    usage; exit
+fi
+
+if [ -z $GENOMEFAI ]; then
+    echo "Error: Must specify genome fai file with -g"
+    usage; exit
+fi
+
+#genomeCoverageBed -ibam test.bam -g ~/Databases/GATK/ucsc.hg19.fasta.fai -bga > test.cov
+#Capture stdout and stderr output to temp log file
+TMP=$( mktemp -p ./ )
+exec >  >(tee -a $TMP >&1)
+exec 2> >(tee -a $TMP >&2)
+
+#Introduce script
+log "*****"
+log "Commencing $(basename $0)"
+ICMD="$@"
+log "Invoking command: $0 $ICMD" INV
+
+#Command(s)
+
+# 1) 
+CMD="/usr/local/share/BEDTools-Version-2.11.2/bin/genomeCoverageBed -ibam $IN -g $GENOMEFAI -bga > $OUT"
+log "$CMD" CMD
+eval $CMD
+
+#Check for errors
+SUCCESS=false
+check_errors $TMP $SCRIPT $SUCCESS
+if [ $SUCCESS = false ]; then
+    exit
+fi
+
+
+#Finish up and output stats
+ELAPSED=$(elapsed_since $START)
+log "Success"
+log "Module\tThreads\tTime(s)" STA
+log "$(basename $0)\t${THREADS}\t${ELAPSED}" STA
+
+#ERROR TAGS
+#E# Input error
+#E# Exiting
