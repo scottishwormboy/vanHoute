@@ -1,0 +1,110 @@
+#analysis of edze experiment. Aim to find low frequency mutations from pooled samples corresponding to escape mutants
+#reads available after 4th Feb 2016 from ENA PRJEB12001
+#also temporarily at http://cgr.liv.ac.uk/illum/LIMS8810_8ee373a8b1f14d85
+
+#requires
+
+#watt27 edzeMS screen
+
+#my bwa
+bwaexe=$HOME/bin/bwa
+
+#this directory local to my system, edit here if repeating
+edzedir=$HOME/Datafiles/Pseudo/edzeMS
+mkdir $edzedir
+cd $edzedir
+
+flash -v > versioninfo.log
+fastqc -v >> versioninfo.log
+$bwaexe 2>&1 >/dev/null |head -4 >>versioninfo.log
+samtools 2>&1 >/dev/null |head -4 >>versioninfo.log
+
+#copy reads (edit if downloading from ENA)
+mkdir $edzedir/reads
+find /data/illum/151127_M03772_0021_000000000-AKHAH/Project_EWestra_8810_m1 |grep 'fastq.gz$'|grep -v 'backup'|xargs -I {} cp {} $edzedir/reads/.
+
+ls $edzedir/reads|grep "R1" >  $edzedir/R1_reads.txt
+ls $edzedir/reads|grep "R2" >  $edzedir/R2_reads.txt
+paste <(seq 1 9) $edzedir/R1_reads.txt $edzedir/R2_reads.txt > $edzedir/control_reads.txt
+
+mkdir $edzedir/flash
+
+cat $edzedir/control_reads.txt |while read sampleno R1 R2
+do
+ flash $edzedir/reads/$R1 $edzedir/reads/$R2 \
+ -o Sample${sampleno} -d $edzedir/flash -r 250 -f 350
+done
+pigz -p 8 $edzedir/flash/*.fastq
+mkdir $edzedir/flash/qc
+fastqc -o $edzedir/flash/qc -t 12 $edzedir/flash/*.fastq.gz
+#overlapped fragments tend to give ~400bp reads, phred score av 37
+#800k reads or so, easily enough for analysis
+#will have to remove duplicates? but coverage is so high that duplicates inevitable
+
+
+#DMS3 phage
+#http://www.ncbi.nlm.nih.gov/nuccore/NC_008717.1
+#PA14
+#http://www.ncbi.nlm.nih.gov/nuccore/NC_008463
+
+mkdir $edzedir/ref
+#downloaded ref sequences
+
+ref=$edzedir/ref/PA14DMS3.fasta
+samtools faidx $ref
+awk 'BEGIN {OFS="\t"} {print $1,"0",$2}' $ref.fai > $ref.bed
+awk 'BEGIN {OFS="\t"} {print $1,$2}' $ref.fai > $ref.genome
+awk 'NR==2 {print $0}' $ref.bed > $ref.phage.bed
+
+cat $edzedir/ref/PA14.fasta $edzedir/ref/DMS3.fasta > $ref
+
+#map with bwa-mem, include host to filter out contaminating reads, used flashed reads
+#bwa v0.7.12
+
+$bwaexe index $ref
+
+mkdir $edzedir/bams
+mkdir $edzedir/bams/raw
+mkdir $edzedir/bams/srt
+mkdir $edzedir/pileup
+mkdir $edzedir/coverage
+
+seq 1 9 | while read sampleno
+do
+  $bwaexe mem -t 8 $ref $edzedir/flash/Sample${sampleno}.extendedFrags.fastq.gz |samtools view -bSt $ref.fai - > $edzedir/bams/raw/Sample${sampleno}.bam
+  samtools sort $edzedir/bams/raw/Sample${sampleno}.bam $edzedir/bams/srt/Sample${sampleno}_srt
+#genomeCoverageBed -ibam $edzedir/bams/srt/Sample1_srt.bam -g $ref.genome > $edzedir/coverage/Sample1_coverage_raw.bed
+  ~/cgrpipe/Modules/GenomeCoverageFromBam -g ${ref}.fai -i $edzedir/bams/srt/Sample${sampleno}_srt.bam -o $edzedir/coverage/Sample${sampleno}_coverage_raw.bed $edzedir/coverage/Sample${sampleno}_coverage_raw.log
+  samtools mpileup -Q35 -A -f $ref -d 150000  $edzedir/bams/srt/Sample${sampleno}_srt.bam |\
+  awk 'BEGIN {FS="\t"; OFS="\t"} $1 ~ /NC_008717/ {
+   ref1=gsub(/[\.,]/,"",$5); 
+   alt1=gsub(/[AGCTagct]/,"",$5);
+   n1=gsub(/[Nn]/,"",$5);
+   indel1=gsub(/[\+-]/,"",$5);
+   print $1,$2,$3,$4,ref1,alt1,n1,indel1}' > $edzedir/pileup/Sample${sampleno}_pileup.txt
+done
+
+#map target seqs to phage
+#$bwaexe aln $ref $edzedir/target_seqs1.fa > $edzedir/target_seqs1.sai
+#$bwaexe samse $ref $edzedir/target_seqs1.fa $edzedir/target_seqs1.sai > $edzedir/target_seqs1.sam #crash
+
+$bwaexe mem $ref $edzedir/target_seqs1.fa > $edzedir/target_seqs1.sam
+awk 'BEGIN {OFS="\t"} $1 ~ /Clone/ {pos1=$4-1;pos2=$4+33;print $1,pos1,pos2}'  $edzedir/target_seqs1.sam > $edzedir/target_seqs1.bed
+#note, this is zero-based
+
+#again but just the PAM and 8 bases adjacent, need strand
+awk 'BEGIN {OFS="\t"} $1 ~ /Clone/ {
+  if($2==0){
+    pos1=$4+23;pos2=$4+33
+  }else{
+    pos1=$4-1;pos2=$4+9
+  }
+;print $1,pos1,pos2}' $edzedir/target_seqs1.sam > $edzedir/target_seqs_10.bed
+
+#submit reads to ENA, 
+ftp -p -i webin.ebi.ac.uk
+bin
+mput *.gz
+
+#PRJEB12001, truseq_nano
+
